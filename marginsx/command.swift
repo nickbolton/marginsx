@@ -30,12 +30,20 @@ struct Snapshot: ParsableCommand {
     let commit = try gitCommitHash(at: repoRoot)
 
     let packages = try discoverPackages(repoRoot: repoRoot)
+    let spmFiles = Set(packages.flatMap { $0.sources + $0.tests })
+
+    let (xcodeSources, xcodeTests) = try discoverXcodeOnlySources(
+      repoRoot: repoRoot,
+      excluding: spmFiles
+    )
 
     let snapshot = SnapshotModel(
       timestamp: ISO8601DateFormatter().string(from: Date()),
       gitCommit: commit,
       repoRoot: repoRoot.path,
-      packages: packages
+      packages: packages,
+      xcodeSources: xcodeSources,
+      xcodeTests: xcodeTests
     )
 
     try writeSnapshot(snapshot, repoRoot: repoRoot)
@@ -43,7 +51,8 @@ struct Snapshot: ParsableCommand {
     print("✔ Snapshot captured")
     print("  Commit: \(commit)")
     print("  Packages: \(packages.count)")
-    print("  Location: .marginsx/snapshot/snapshot.json")
+    print("  Xcode sources: \(xcodeSources.count)")
+    print("  Xcode tests: \(xcodeTests.count)")
   }
 }
 
@@ -78,6 +87,8 @@ struct SnapshotModel: Codable {
   let gitCommit: String
   let repoRoot: String
   let packages: [PackageSnapshot]
+  let xcodeSources: [String]
+  let xcodeTests: [String]
 }
 
 struct PackageSnapshot: Codable {
@@ -87,7 +98,7 @@ struct PackageSnapshot: Codable {
   let tests: [String]
 }
 
-// MARK: - Package Discovery
+// MARK: - Package Discovery (SPM)
 
 func discoverPackages(repoRoot: URL) throws -> [PackageSnapshot] {
   let fm = FileManager.default
@@ -108,15 +119,8 @@ func discoverPackages(repoRoot: URL) throws -> [PackageSnapshot] {
     let sourcesDir = packageDir.appendingPathComponent("Sources")
     let testsDir = packageDir.appendingPathComponent("Tests")
 
-    let sources = collectSwiftFiles(
-      root: sourcesDir,
-      repoRoot: repoRoot
-    )
-
-    let tests = collectSwiftFiles(
-      root: testsDir,
-      repoRoot: repoRoot
-    )
+    let sources = collectSwiftFiles(root: sourcesDir, repoRoot: repoRoot)
+    let tests = collectSwiftFiles(root: testsDir, repoRoot: repoRoot)
 
     packages.append(
       PackageSnapshot(
@@ -131,7 +135,52 @@ func discoverPackages(repoRoot: URL) throws -> [PackageSnapshot] {
   return packages.sorted { $0.name < $1.name }
 }
 
-// MARK: - File Collection Helpers
+// MARK: - Xcode-only Source Discovery
+
+func discoverXcodeOnlySources(
+  repoRoot: URL,
+  excluding spmFiles: Set<String>
+) throws -> ([String], [String]) {
+
+  let fm = FileManager.default
+  let enumerator = fm.enumerator(
+    at: repoRoot,
+    includingPropertiesForKeys: [.isRegularFileKey],
+    options: [.skipsHiddenFiles]
+  )
+
+  var sources: [String] = []
+  var tests: [String] = []
+
+  while let fileURL = enumerator?.nextObject() as? URL {
+    guard fileURL.pathExtension == "swift" else { continue }
+
+    let relative = relativePath(fileURL, base: repoRoot)
+
+    // Skip SPM-owned files
+    if spmFiles.contains(relative) { continue }
+
+    // Skip snapshot/flatten artifacts
+    if relative.hasPrefix(".marginsx/") { continue }
+
+    // Classify tests vs sources
+    if isTestPath(relative) {
+      tests.append(relative)
+    } else {
+      sources.append(relative)
+    }
+  }
+
+  return (sources.sorted(), tests.sorted())
+}
+
+func isTestPath(_ path: String) -> Bool {
+  path.contains("/Tests/") ||
+  path.hasSuffix("Tests.swift") ||
+  path.contains("Test/")
+}
+
+// MARK: - File Helpers
 
 func collectSwiftFiles(root: URL, repoRoot: URL) -> [String] {
   let fm = FileManager.default
