@@ -1,18 +1,31 @@
 import Foundation
 import ArgumentParser
+import CryptoKit
 
 // MARK: - Snapshot Command
 
 struct Snapshot: ParsableCommand {
 
   static let configuration = CommandConfiguration(
-    abstract: "Capture a filesystem-authoritative snapshot of the repo."
+    abstract: "Capture a filesystem-authoritative snapshot using SwiftPM-assisted import closure."
   )
+
+  @Option(
+    name: [.customLong("target")],
+    parsing: .unconditionalSingleValue,
+    help: "Target spec: <target-name>[=<entry-folder>]. Repeatable."
+  )
+  var targetSpecs: [String] = []
 
   func run() throws {
     let repoRoot = try Git.repoRoot()
     try Git.ensureCleanWorkingTree(at: repoRoot)
 
+    guard !targetSpecs.isEmpty else {
+      throw ValidationError("At least one --target must be specified.")
+    }
+
+    let targets = try parseTargetSpecs(targetSpecs, repoRoot: repoRoot)
     let gitIgnore = GitIgnore.load(from: repoRoot)
     let commit = try Git.commitHash(at: repoRoot)
 
@@ -21,10 +34,27 @@ struct Snapshot: ParsableCommand {
       gitIgnore: gitIgnore
     )
 
+    let packageIndex = try PackageIndex.load(
+      packages: packages,
+      repoRoot: repoRoot
+    )
+
     let repoFiles = try discoverRepoFiles(
       repoRoot: repoRoot,
       packages: packages,
       gitIgnore: gitIgnore
+    )
+
+    let importIndex = buildImportIndex(
+      repoFiles,
+      repoRoot: repoRoot
+    )
+
+    let resolvedTargets = resolveTargets(
+      targets: targets,
+      repoFiles: repoFiles,
+      importIndex: importIndex,
+      packageIndex: packageIndex
     )
 
     let snapshot = SnapshotModel(
@@ -32,7 +62,7 @@ struct Snapshot: ParsableCommand {
       gitCommit: commit,
       repoRoot: repoRoot.path,
       packages: packages,
-      repoFiles: repoFiles
+      targets: resolvedTargets
     )
 
     try writeSnapshot(snapshot, repoRoot: repoRoot)
@@ -47,6 +77,11 @@ struct SnapshotModel: Codable {
   let gitCommit: String
   let repoRoot: String
   let packages: [PackageSnapshot]
+  let targets: [TargetSnapshot]
+}
+
+struct TargetSnapshot: Codable {
+  let name: String
   let repoFiles: [RepoFile]
 }
 
@@ -55,13 +90,13 @@ struct PackageSnapshot: Codable {
   let rootPath: String
 }
 
-struct RepoFile: Codable {
+struct RepoFile: Codable, Hashable {
   let path: String
   let owner: Owner
   let kind: FileKind
 }
 
-enum Owner: Codable {
+enum Owner: Codable, Hashable {
   case repo
   case package(String)
 }
@@ -73,81 +108,64 @@ enum FileKind: String, Codable {
   case other
 }
 
-// MARK: - Hard-coded Exclusions
+// MARK: - Target Specs
 
-let excludedPathComponents: Set<String> = [
-  ".git",
-  ".build",
-  ".swiftpm",
-  "DerivedData",
-  "XCBuildData",
-  "Pods",
-  "Carthage",
-  ".marginsx",
-  ".DS_Store",
-  ".github"
-]
+struct TargetSpec {
+  let name: String
+  let entryFolder: String
+}
 
-// MARK: - GitIgnore
+func parseTargetSpecs(
+  _ raw: [String],
+  repoRoot: URL
+) throws -> [TargetSpec] {
 
-struct GitIgnore {
+  try raw.map { spec in
+    let trimmed = spec.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      throw ValidationError("Empty --target value.")
+    }
 
-  enum Pattern {
-    case directory(String)
-    case suffix(String)
-    case exact(String)
-  }
+    let parts = trimmed.split(
+      separator: "=",
+      maxSplits: 1,
+      omittingEmptySubsequences: false
+    )
 
-  let patterns: [Pattern]
+    let name = parts[0].trimmingCharacters(in: .whitespaces)
+    guard !name.isEmpty else {
+      throw ValidationError("Missing target name in --target '\(spec)'.")
+    }
 
-  static func load(from repoRoot: URL) -> GitIgnore {
-    let path = repoRoot.appendingPathComponent(".gitignore")
+    let entryFolder: String
+    if parts.count == 2 {
+      entryFolder = parts[1].trimmingCharacters(in: .whitespaces)
+      guard !entryFolder.isEmpty else {
+        throw ValidationError("Empty entry folder in --target '\(spec)'.")
+      }
+    } else {
+      entryFolder = name
+    }
 
+    let folderURL = repoRoot.appendingPathComponent(entryFolder)
+    var isDir: ObjCBool = false
     guard
-      let contents = try? String(contentsOf: path, encoding: .utf8)
+      FileManager.default.fileExists(
+        atPath: folderURL.path,
+        isDirectory: &isDir
+      ),
+      isDir.boolValue
     else {
-      return GitIgnore(patterns: [])
+      throw ValidationError(
+        "Target entry folder does not exist or is not a directory: \(entryFolder)"
+      )
     }
 
-    let patterns: [Pattern] = contents
-      .split(separator: "\n")
-      .map { $0.trimmingCharacters(in: .whitespaces) }
-      .filter { !$0.isEmpty && !$0.hasPrefix("#") }
-      .compactMap { line in
-        if line.hasSuffix("/") {
-          return .directory(String(line.dropLast()))
-        }
-        if line.hasPrefix("*.") {
-          return .suffix(String(line.dropFirst()))
-        }
-        return .exact(line)
-      }
-
-    return GitIgnore(patterns: patterns)
-  }
-
-  func matches(_ path: String) -> Bool {
-    for pattern in patterns {
-      switch pattern {
-      case .directory(let dir):
-        if path.split(separator: "/").contains(Substring(dir)) {
-          return true
-        }
-      case .suffix(let suffix):
-        if path.hasSuffix(suffix) {
-          return true
-        }
-      case .exact(let exact):
-        if path == exact || path.hasPrefix(exact + "/") {
-          return true
-        }
-      }
-    }
-    return false
+    return TargetSpec(name: name, entryFolder: entryFolder)
   }
 }
 
-// MARK: - Discovery
+// MARK: - Package Discovery
 
 func discoverPackages(
   repoRoot: URL,
@@ -161,7 +179,7 @@ func discoverPackages(
 
   while let url = enumerator?.nextObject() as? URL {
     let relative = relativePath(url, base: repoRoot)
-    if isExcluded(relative, gitIgnore: gitIgnore, packages: []) { continue }
+    if gitIgnore.matches(relative) { continue }
 
     guard url.lastPathComponent == "Package.swift" else { continue }
 
@@ -176,6 +194,133 @@ func discoverPackages(
 
   return packages.sorted { $0.name < $1.name }
 }
+
+// MARK: - Package Index (SwiftPM describe + caching)
+
+struct PackageIndex {
+  let modules: [String: Set<RepoFile>]
+
+  static func load(
+    packages: [PackageSnapshot],
+    repoRoot: URL
+  ) throws -> PackageIndex {
+
+    let cacheRoot = repoRoot.appendingPathComponent(".marginsx/cache/swiftpm")
+    try FileManager.default.createDirectory(
+      at: cacheRoot,
+      withIntermediateDirectories: true
+    )
+
+    var modules: [String: Set<RepoFile>] = [:]
+
+    for pkg in packages {
+      let pkgRoot = repoRoot.appendingPathComponent(pkg.rootPath)
+      let packageSwift = pkgRoot.appendingPathComponent("Package.swift")
+
+      let hash = try sha256(of: packageSwift)
+      let cacheFile = cacheRoot.appendingPathComponent("\(pkg.name)-\(hash).json")
+
+      let describe: SwiftPMDescribe
+
+      if FileManager.default.fileExists(atPath: cacheFile.path) {
+        let data = try Data(contentsOf: cacheFile)
+        describe = try JSONDecoder().decode(SwiftPMDescribe.self, from: data)
+      } else {
+        describe = try runSwiftPackageDescribe(at: pkgRoot)
+        let data = try JSONEncoder().encode(describe)
+        try data.write(to: cacheFile, options: .atomic)
+      }
+
+      for target in describe.targets where target.type == "regular" {
+        var files: Set<RepoFile> = []
+
+        for src in target.sources {
+          files.insert(
+            RepoFile(
+              path: "\(pkg.rootPath)/\(target.path)/\(src)",
+              owner: .package(pkg.name),
+              kind: .source
+            )
+          )
+        }
+
+        for res in target.resources {
+          files.insert(
+            RepoFile(
+              path: "\(pkg.rootPath)/\(target.path)/\(res)",
+              owner: .package(pkg.name),
+              kind: .resource
+            )
+          )
+        }
+
+        modules[target.name] = files
+      }
+    }
+
+    return PackageIndex(modules: modules)
+  }
+}
+
+// MARK: - SwiftPM describe --type json
+
+struct SwiftPMDescribe: Codable {
+  struct Target: Codable {
+    let name: String
+    let type: String
+    let path: String
+    let sources: [String]
+    let resources: [String]
+  }
+  let targets: [Target]
+}
+
+func runSwiftPackageDescribe(at url: URL) throws -> SwiftPMDescribe {
+  let process = Process()
+  process.executableURL = URL(fileURLWithPath: "/usr/bin/swift")
+  process.arguments = ["package", "describe", "--type", "json"]
+  process.currentDirectoryURL = url
+
+  let outPipe = Pipe()
+  let errPipe = Pipe()
+  process.standardOutput = outPipe
+  process.standardError = errPipe
+
+  try process.run()
+  process.waitUntilExit()
+
+  let stdout = outPipe.fileHandleForReading.readDataToEndOfFile()
+  let stderr = errPipe.fileHandleForReading.readDataToEndOfFile()
+
+  guard process.terminationStatus == 0 else {
+    let msg = String(data: stderr, encoding: .utf8) ?? "<no stderr>"
+    throw SwiftPMError.describeFailed(
+      packagePath: url.path,
+      exitCode: Int(process.terminationStatus),
+      stderr: msg
+    )
+  }
+
+  return try JSONDecoder().decode(SwiftPMDescribe.self, from: stdout)
+}
+
+enum SwiftPMError: Error, CustomStringConvertible {
+  case describeFailed(packagePath: String, exitCode: Int, stderr: String)
+
+  var description: String {
+    switch self {
+    case let .describeFailed(packagePath, exitCode, stderr):
+      return """
+      swift package describe failed
+        package: \(packagePath)
+        exitCode: \(exitCode)
+        stderr: \(stderr)
+      """
+    }
+  }
+}
+
+// MARK: - Repo Discovery
 
 func discoverRepoFiles(
   repoRoot: URL,
@@ -199,18 +344,122 @@ func discoverRepoFiles(
     fm.fileExists(atPath: url.path, isDirectory: &isDir)
     if isDir.boolValue { continue }
 
-    let owner = owningPackage(for: relative, packages: packages)
     let kind = classifyFile(relative)
+    guard kind != .other else { continue }
 
     files.append(
-      RepoFile(path: relative, owner: owner, kind: kind)
+      RepoFile(
+        path: relative,
+        owner: owningPackage(for: relative, packages: packages),
+        kind: kind
+      )
     )
   }
 
-  return files.sorted { $0.path < $1.path }
+  return files
 }
 
-// MARK: - Exclusion Logic (CRITICAL FIX)
+// MARK: - Import Index
+
+func buildImportIndex(
+  _ files: [RepoFile],
+  repoRoot: URL
+) -> [RepoFile: Set<String>] {
+
+  var index: [RepoFile: Set<String>] = [:]
+
+  for file in files where file.kind == .source {
+    let url = repoRoot.appendingPathComponent(file.path)
+    guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
+      continue
+    }
+
+    let imports = contents
+      .split(separator: "\n")
+      .compactMap { line -> String? in
+        let t = line.trimmingCharacters(in: .whitespaces)
+        guard t.hasPrefix("import ") else { return nil }
+        return t
+          .replacingOccurrences(of: "import ", with: "")
+          .split(separator: " ")
+          .first
+          .map(String.init)
+      }
+
+    index[file] = Set(imports)
+  }
+
+  return index
+}
+
+// MARK: - Target Resolution (Import Closure)
+
+func resolveTargets(
+  targets: [TargetSpec],
+  repoFiles: [RepoFile],
+  importIndex: [RepoFile: Set<String>],
+  packageIndex: PackageIndex
+) -> [TargetSnapshot] {
+
+  let repoFileSet = Set(repoFiles)
+
+  return targets.map { target in
+    var visitedFiles: Set<RepoFile> = []
+    var visitedModules: Set<String> = []
+    var queue = repoFiles.filter {
+      $0.kind == .source &&
+      $0.path.hasPrefix(target.entryFolder + "/")
+    }
+
+    while let file = queue.popLast() {
+      guard visitedFiles.insert(file).inserted else { continue }
+
+      for module in importIndex[file] ?? [] {
+
+        if let pkgFiles = packageIndex.modules[module],
+           visitedModules.insert(module).inserted {
+          visitedFiles.formUnion(pkgFiles)
+          continue
+        }
+
+        for candidate in repoFileSet where
+          candidate.owner == .repo &&
+          candidate.kind == .source &&
+          candidate.path.hasSuffix("/\(module).swift") &&
+          !visitedFiles.contains(candidate) {
+          queue.append(candidate)
+        }
+      }
+    }
+
+    return TargetSnapshot(
+      name: target.name,
+      repoFiles: visitedFiles.sorted { $0.path < $1.path }
+    )
+  }
+}
+
+// MARK: - Exclusion / Helpers
+
+let excludedPathComponents: Set<String> = [
+  ".git", ".build", ".swiftpm", "DerivedData",
+  "XCBuildData", "Pods", "Carthage",
+  ".marginsx", ".DS_Store", ".github"
+]
+
+struct GitIgnore {
+  let patterns: [String]
+
+  static func load(from root: URL) -> GitIgnore {
+    let path = root.appendingPathComponent(".gitignore")
+    let text = (try? String(contentsOf: path, encoding: .utf8)) ?? ""
+    return GitIgnore(patterns: text.split(separator: "\n").map(String.init))
+  }
+
+  func matches(_ path: String) -> Bool {
+    patterns.contains { path.contains($0) }
+  }
+}
 
 func isExcluded(
   _ path: String,
@@ -219,82 +468,67 @@ func isExcluded(
 ) -> Bool {
 
   let components = path.split(separator: "/").map(String.init)
-
-  // Global exclusions
-  if components.contains(where: { excludedPathComponents.contains($0) }) {
+  if components.contains(where: excludedPathComponents.contains) {
     return true
   }
 
-  // Package-scoped build artifact exclusions
-  for package in packages {
-    if path.hasPrefix(package.rootPath + "/") {
-
-      // Xcode-style build/
-      if components.contains("build") {
-        return true
-      }
-
-      // SwiftPM-style <PackageName>.build/
-      if components.contains("\(package.name).build") {
-        return true
-      }
+  for pkg in packages where path.hasPrefix(pkg.rootPath + "/") {
+    if components.contains("build") || components.contains("\(pkg.name).build") {
+      return true
     }
   }
 
-  // .gitignore
-  if gitIgnore.matches(path) {
-    return true
-  }
-
-  return false
+  return gitIgnore.matches(path)
 }
-
-// MARK: - Ownership
 
 func owningPackage(
   for path: String,
   packages: [PackageSnapshot]
 ) -> Owner {
 
-  for package in packages {
-    if path.hasPrefix(package.rootPath + "/") {
-      return .package(package.name)
-    }
+  for pkg in packages where path.hasPrefix(pkg.rootPath + "/") {
+    return .package(pkg.name)
   }
-
   return .repo
 }
-
-// MARK: - Classification (CONSERVATIVE)
 
 func classifyFile(_ path: String) -> FileKind {
   if path.hasSuffix(".swift") {
     return path.contains("/Tests/") ? .test : .source
   }
-
-  if path.contains("/Resources/") ||
-     path.contains(".xcassets/") ||
-     path.contains(".lproj/") {
+  if path.contains(".xcassets") || path.contains("/Resources/") {
     return .resource
   }
-
-  let standaloneResourceExtensions = [
-    "png", "jpg", "jpeg", "svg",
-    "ttf", "otf", "strings"
-  ]
-
-  if standaloneResourceExtensions.contains(where: { path.hasSuffix(".\($0)") }) {
-    return .resource
-  }
-
   return .other
 }
 
-// MARK: - Snapshot Output
+func relativePath(_ url: URL, base: URL) -> String {
+  let basePath = base.standardizedFileURL.path
+  let fullPath = url.standardizedFileURL.path
+  guard fullPath.hasPrefix(basePath) else { return fullPath }
+  return String(fullPath.dropFirst(basePath.count + 1))
+}
 
-func writeSnapshot(_ snapshot: SnapshotModel, repoRoot: URL) throws {
-  let dir = repoRoot.appendingPathComponent(".marginsx/snapshot", isDirectory: true)
-  try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+// MARK: - Hashing
+
+func sha256(of file: URL) throws -> String {
+  let data = try Data(contentsOf: file)
+  let hash = SHA256.hash(data: data)
+  return hash.map { String(format: "%02x", $0) }.joined()
+}
+
+// MARK: - Output
+
+func writeSnapshot(
+  _ snapshot: SnapshotModel,
+  repoRoot: URL
+) throws {
+
+  let dir = repoRoot.appendingPathComponent(".marginsx/snapshot")
+  try FileManager.default.createDirectory(
+    at: dir,
+    withIntermediateDirectories: true
+  )
 
   let encoder = JSONEncoder()
   encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -307,24 +541,11 @@ func writeSnapshot(_ snapshot: SnapshotModel, repoRoot: URL) throws {
 }
 
 func printSnapshotSummary(_ snapshot: SnapshotModel) {
-  let byKind = Dictionary(grouping: snapshot.repoFiles, by: { $0.kind })
-
   print("✔ Snapshot captured")
   print("  Commit: \(snapshot.gitCommit)")
-  print("  Packages: \(snapshot.packages.count)")
-  print("  Files: \(snapshot.repoFiles.count)")
-  print("    Sources:   \(byKind[.source]?.count ?? 0)")
-  print("    Tests:     \(byKind[.test]?.count ?? 0)")
-  print("    Resources: \(byKind[.resource]?.count ?? 0)")
-  print("    Other:     \(byKind[.other]?.count ?? 0)")
+  print("  Targets: \(snapshot.targets.count)")
+  for t in snapshot.targets {
+    print("    \(t.name): \(t.repoFiles.count) files")
+  }
   print("  Snapshot written to: .marginsx/snapshot/snapshot.json")
-}
-
-// MARK: - Utilities
-
-func relativePath(_ url: URL, base: URL) -> String {
-  let basePath = base.standardizedFileURL.path
-  let fullPath = url.standardizedFileURL.path
-  guard fullPath.hasPrefix(basePath) else { return fullPath }
-  return String(fullPath.dropFirst(basePath.count + 1))
 }
