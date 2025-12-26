@@ -20,7 +20,7 @@ struct MarginsX: ParsableCommand {
 
 struct Snapshot: ParsableCommand {
   static let configuration = CommandConfiguration(
-    abstract: "Capture a snapshot of the current source state (no mutation)."
+    abstract: "Capture a filesystem-authoritative snapshot of the repo (no mutation)."
   )
 
   func run() throws {
@@ -30,37 +30,21 @@ struct Snapshot: ParsableCommand {
     let commit = try gitCommitHash(at: repoRoot)
 
     let packages = try discoverPackages(repoRoot: repoRoot)
-    let spmSources = Set(packages.flatMap { $0.sources })
-    let spmTests   = Set(packages.flatMap { $0.tests })
-    let spmOwned   = spmSources.union(spmTests)
+    let packageRoots = Dictionary(uniqueKeysWithValues: packages.map {
+      ($0.rootPath, $0.name)
+    })
 
-    let xcodeOwned = try discoverXcodeCompiledSwiftFiles(repoRoot: repoRoot)
-
-    let allSwift = try discoverAllSwiftFiles(repoRoot: repoRoot)
-
-    let xcodeSources = xcodeOwned
-      .subtracting(spmOwned)
-      .filter { !isTestPath($0) }
-      .sorted()
-
-    let xcodeTests = xcodeOwned
-      .subtracting(spmOwned)
-      .filter { isTestPath($0) }
-      .sorted()
-
-    let orphanSwiftFiles = allSwift
-      .subtracting(spmOwned)
-      .subtracting(xcodeOwned)
-      .sorted()
+    let repoFiles = try discoverRepoFiles(
+      repoRoot: repoRoot,
+      packageRoots: packageRoots
+    )
 
     let snapshot = SnapshotModel(
       timestamp: ISO8601DateFormatter().string(from: Date()),
       gitCommit: commit,
       repoRoot: repoRoot.path,
       packages: packages,
-      xcodeSources: xcodeSources,
-      xcodeTests: xcodeTests,
-      orphanSwiftFiles: orphanSwiftFiles
+      repoFiles: repoFiles
     )
 
     try writeSnapshot(snapshot, repoRoot: repoRoot)
@@ -68,11 +52,7 @@ struct Snapshot: ParsableCommand {
     print("✔ Snapshot captured")
     print("  Commit: \(commit)")
     print("  Packages: \(packages.count)")
-    print("  Xcode sources: \(xcodeSources.count)")
-    print("  Xcode tests: \(xcodeTests.count)")
-    if !orphanSwiftFiles.isEmpty {
-      print("  ⚠️ Orphan Swift files: \(orphanSwiftFiles.count)")
-    }
+    print("  Files: \(repoFiles.count)")
   }
 }
 
@@ -100,74 +80,54 @@ struct Rehydrate: ParsableCommand {
   }
 }
 
-// MARK: - Snapshot Model
+// MARK: - Snapshot Models
 
 struct SnapshotModel: Codable {
   let timestamp: String
   let gitCommit: String
   let repoRoot: String
   let packages: [PackageSnapshot]
-  let xcodeSources: [String]
-  let xcodeTests: [String]
-  let orphanSwiftFiles: [String]
+  let repoFiles: [RepoFile]
 }
 
 struct PackageSnapshot: Codable {
   let name: String
+  let rootPath: String
+}
+
+struct RepoFile: Codable {
   let path: String
-  let sources: [String]
-  let tests: [String]
+  let owner: Owner
+  let kind: FileKind
 }
 
-// MARK: - Discovery Layer 0: All Swift Files
-
-func discoverAllSwiftFiles(repoRoot: URL) throws -> Set<String> {
-  let fm = FileManager.default
-  let enumerator = fm.enumerator(
-    at: repoRoot,
-    includingPropertiesForKeys: nil,
-    options: []
-  )
-
-  var results: Set<String> = []
-
-  while let url = enumerator?.nextObject() as? URL {
-    guard url.pathExtension == "swift" else { continue }
-    let relative = relativePath(url, base: repoRoot)
-    guard !relative.hasPrefix(".marginsx/") else { continue }
-    results.insert(relative)
-  }
-
-  return results
+enum Owner: Codable {
+  case package(String)
+  case repo
 }
 
-// MARK: - Discovery Layer 1: SPM Packages
+enum FileKind: String, Codable {
+  case source
+  case test
+  case resource
+  case other
+}
+
+// MARK: - Discovery
 
 func discoverPackages(repoRoot: URL) throws -> [PackageSnapshot] {
   let fm = FileManager.default
-  let enumerator = fm.enumerator(
-    at: repoRoot,
-    includingPropertiesForKeys: nil,
-    options: []
-  )
+  let enumerator = fm.enumerator(at: repoRoot, includingPropertiesForKeys: nil)
 
   var packages: [PackageSnapshot] = []
 
-  while let fileURL = enumerator?.nextObject() as? URL {
-    guard fileURL.lastPathComponent == "Package.swift" else { continue }
-
-    let packageDir = fileURL.deletingLastPathComponent()
-    let name = packageDir.lastPathComponent
-
-    let sources = collectSwiftFiles(root: packageDir.appendingPathComponent("Sources"), repoRoot: repoRoot)
-    let tests = collectSwiftFiles(root: packageDir.appendingPathComponent("Tests"), repoRoot: repoRoot)
-
+  while let url = enumerator?.nextObject() as? URL {
+    guard url.lastPathComponent == "Package.swift" else { continue }
+    let root = url.deletingLastPathComponent()
     packages.append(
       PackageSnapshot(
-        name: name,
-        path: relativePath(packageDir, base: repoRoot),
-        sources: sources.sorted(),
-        tests: tests.sorted()
+        name: root.lastPathComponent,
+        rootPath: relativePath(root, base: repoRoot)
       )
     )
   }
@@ -175,217 +135,86 @@ func discoverPackages(repoRoot: URL) throws -> [PackageSnapshot] {
   return packages.sorted { $0.name < $1.name }
 }
 
-// MARK: - Discovery Layer 2: Xcode Compiled Swift Files (PBXProj)
+func discoverRepoFiles(
+  repoRoot: URL,
+  packageRoots: [String: String]
+) throws -> [RepoFile] {
 
-func discoverXcodeCompiledSwiftFiles(repoRoot: URL) throws -> Set<String> {
-  let pbxprojURLs = try findPBXProjFiles(repoRoot: repoRoot)
-  var results: Set<String> = []
-
-  for pbxprojURL in pbxprojURLs {
-    let pbx = try PBXProj.parse(contentsOf: pbxprojURL)
-
-    // Source root for path resolution is the directory containing the .xcodeproj bundle.
-    // Example: Foo/Foo.xcodeproj/project.pbxproj -> sourceRoot = Foo/
-    let xcodeprojDir = pbxprojURL.deletingLastPathComponent()           // .../Foo.xcodeproj
-    let sourceRoot = xcodeprojDir.deletingLastPathComponent()           // .../Foo/
-
-    for swiftPath in pbx.compiledSwiftPaths(sourceRoot: sourceRoot) {
-      let fileURL = sourceRoot.appendingPathComponent(swiftPath)
-
-      // Only include real files on disk.
-      if FileManager.default.fileExists(atPath: fileURL.path) {
-        results.insert(relativePath(fileURL, base: repoRoot))
-      }
-    }
-  }
-
-  return results
-}
-
-func findPBXProjFiles(repoRoot: URL) throws -> [URL] {
   let fm = FileManager.default
-  let enumerator = fm.enumerator(
-    at: repoRoot,
-    includingPropertiesForKeys: nil,
-    options: []
-  )
+  let enumerator = fm.enumerator(at: repoRoot, includingPropertiesForKeys: nil)
 
-  var results: [URL] = []
+  var results: [RepoFile] = []
 
   while let url = enumerator?.nextObject() as? URL {
-    guard url.lastPathComponent == "project.pbxproj" else { continue }
-    // Skip derived artifacts
-    let rel = relativePath(url, base: repoRoot)
-    guard !rel.hasPrefix(".marginsx/") else { continue }
-    results.append(url)
-  }
+    let relative = relativePath(url, base: repoRoot)
 
-  return results
-}
+    // Skip directories
+    var isDir: ObjCBool = false
+    fm.fileExists(atPath: url.path, isDirectory: &isDir)
+    if isDir.boolValue { continue }
 
-// MARK: - Minimal PBXProj Parser
-
-fileprivate struct PBXProj {
-  /// buildFileID -> fileRefID
-  let buildFileToFileRef: [String: String]
-  /// fileRefID -> (path, sourceTree)
-  let fileRefToPath: [String: PBXFileRef]
-
-  struct PBXFileRef {
-    let path: String
-    let sourceTree: String
-  }
-
-  static func parse(contentsOf pbxprojURL: URL) throws -> PBXProj {
-    let text = try String(contentsOf: pbxprojURL, encoding: .utf8)
-
-    // Parse PBXBuildFile entries: <ID> = { isa = PBXBuildFile; fileRef = <REFID> ...; };
-    var buildFileToFileRef: [String: String] = [:]
-    var fileRefToPath: [String: PBXFileRef] = [:]
-
-    // This is intentionally minimal and line-oriented.
-    // It works because pbxproj entries are typically single-line for these objects.
-    let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-
-    for raw in lines {
-      let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-
-      // PBXBuildFile
-      // Example:
-      //   ABCDEF1234567890 /* Foo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0123456789ABCDEF /* Foo.swift */; };
-      if line.contains("isa = PBXBuildFile") || line.contains("isa=PBXBuildFile") {
-        if let id = extractLeadingID(from: line),
-           let fileRef = extractFieldID(named: "fileRef", from: line) {
-          buildFileToFileRef[id] = fileRef
-        }
-        continue
-      }
-
-      // PBXFileReference
-      // Example:
-      //   0123456789ABCDEF /* Foo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Foo.swift; sourceTree = "<group>"; };
-      if line.contains("isa = PBXFileReference") || line.contains("isa=PBXFileReference") {
-        guard let id = extractLeadingID(from: line) else { continue }
-
-        // Restrict to Swift-ish file refs early to keep this fast.
-        guard line.contains("sourcecode.swift") || line.contains(".swift") else { continue }
-
-        guard let path = extractFieldString(named: "path", from: line) ?? extractFieldString(named: "name", from: line) else {
-          continue
-        }
-        let sourceTree = extractFieldString(named: "sourceTree", from: line) ?? "\"<group>\""
-        let normalizedSourceTree = trimPBXString(sourceTree)
-
-        fileRefToPath[id] = PBXFileRef(path: trimPBXString(path), sourceTree: normalizedSourceTree)
-        continue
-      }
+    // Skip dot folders
+    if relative.split(separator: "/").contains(where: { $0.hasPrefix(".") }) {
+      continue
     }
 
-    return PBXProj(buildFileToFileRef: buildFileToFileRef, fileRefToPath: fileRefToPath)
+    let owner = owningPackage(
+      for: relative,
+      packageRoots: packageRoots
+    )
+
+    let kind = classifyFile(relative)
+
+    results.append(
+      RepoFile(
+        path: relative,
+        owner: owner,
+        kind: kind
+      )
+    )
   }
 
-  func compiledSwiftPaths(sourceRoot: URL) -> Set<String> {
-    var results: Set<String> = []
+  return results.sorted { $0.path < $1.path }
+}
 
-    for (_, fileRefID) in buildFileToFileRef {
-      guard let fileRef = fileRefToPath[fileRefID] else { continue }
-      guard fileRef.path.hasSuffix(".swift") else { continue }
+func owningPackage(
+  for path: String,
+  packageRoots: [String: String]
+) -> Owner {
 
-      // Resolve relative paths based on sourceTree.
-      // We support the common cases:
-      // - <group>   -> treat as relative to sourceRoot
-      // - SOURCE_ROOT -> relative to sourceRoot
-      // - absolute paths -> keep absolute
-      let p = fileRef.path
-      if p.hasPrefix("/") {
-        // Absolute path
-        let abs = URL(fileURLWithPath: p).standardizedFileURL.path
-        // Convert to sourceRoot-relative if possible; otherwise skip (outside repo).
-        let sr = sourceRoot.standardizedFileURL.path
-        if abs.hasPrefix(sr + "/") {
-          results.insert(String(abs.dropFirst(sr.count + 1)))
-        }
-      } else {
-        // Treat as relative to sourceRoot (good enough for most repos).
-        results.insert(p)
-      }
+  var current = path
+
+  while current.contains("/") {
+    current = String(current.dropLast(current.count - (current.lastIndex(of: "/")?.utf16Offset(in: current) ?? 0)))
+    if let pkg = packageRoots[current] {
+      return .package(pkg)
     }
-
-    return results
-  }
-}
-
-// MARK: - PBX Parsing Helpers
-
-fileprivate func extractLeadingID(from line: String) -> String? {
-  // Leading token is the object ID (typically 24 hex chars).
-  // Example: "ABCDEF... /* comment */ = { ... }"
-  let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-  guard let firstSpace = trimmed.firstIndex(of: " ") else { return nil }
-  let id = String(trimmed[..<firstSpace])
-  guard id.count >= 8 else { return nil }
-  return id
-}
-
-fileprivate func extractFieldID(named name: String, from line: String) -> String? {
-  // Matches: "fileRef = 0123456789ABCDEF /* Foo.swift */;"
-  guard let range = line.range(of: "\(name) = ") else { return nil }
-  let after = line[range.upperBound...]
-  // ID ends at first space or semicolon
-  if let end = after.firstIndex(where: { $0 == " " || $0 == ";" }) {
-    return String(after[..<end])
-  }
-  return nil
-}
-
-fileprivate func extractFieldString(named name: String, from line: String) -> String? {
-  // Matches both quoted and unquoted values:
-  // path = Foo.swift;
-  // sourceTree = "<group>";
-  guard let range = line.range(of: "\(name) = ") else { return nil }
-  var after = line[range.upperBound...]
-  // Cut at semicolon
-  if let semi = after.firstIndex(of: ";") {
-    after = after[..<semi]
-  }
-  return after.trimmingCharacters(in: .whitespaces)
-}
-
-fileprivate func trimPBXString(_ value: String) -> String {
-  var v = value.trimmingCharacters(in: .whitespacesAndNewlines)
-  if v.hasPrefix("\""), v.hasSuffix("\""), v.count >= 2 {
-    v.removeFirst()
-    v.removeLast()
-  }
-  return v
-}
-
-// MARK: - Helper Functions
-
-func isTestPath(_ path: String) -> Bool {
-  path.contains("/Tests/") || path.hasSuffix("Tests.swift")
-}
-
-func collectSwiftFiles(root: URL, repoRoot: URL) -> [String] {
-  let fm = FileManager.default
-  guard fm.fileExists(atPath: root.path) else { return [] }
-
-  let enumerator = fm.enumerator(at: root, includingPropertiesForKeys: nil)
-  var results: [String] = []
-
-  while let url = enumerator?.nextObject() as? URL {
-    guard url.pathExtension == "swift" else { continue }
-    results.append(relativePath(url, base: repoRoot))
   }
 
-  return results
+  return .repo
 }
 
-func relativePath(_ url: URL, base: URL) -> String {
-  let basePath = base.standardizedFileURL.path
-  let fullPath = url.standardizedFileURL.path
-  guard fullPath.hasPrefix(basePath) else { return fullPath }
-  return String(fullPath.dropFirst(basePath.count + 1))
+// MARK: - Classification
+
+func classifyFile(_ path: String) -> FileKind {
+  if path.hasSuffix(".swift") {
+    if path.contains("/Tests/") {
+      return .test
+    }
+    return .source
+  }
+
+  let resourceExts = [
+    "xcassets", "json", "plist",
+    "ttf", "otf", "png", "jpg",
+    "jpeg", "svg", "strings"
+  ]
+
+  if resourceExts.contains(where: { path.hasSuffix(".\($0)") }) {
+    return .resource
+  }
+
+  return .other
 }
 
 // MARK: - Git Helpers
@@ -403,7 +232,7 @@ func gitCommitHash(at repoRoot: URL) throws -> String {
 func ensureCleanGitState(at repoRoot: URL) throws {
   let status = try runGit(["status", "--porcelain"], cwd: repoRoot)
   if !status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-    throw ValidationError("Git working tree is dirty. Commit or stash changes before running snapshot.")
+    throw ValidationError("Git working tree is dirty.")
   }
 }
 
@@ -440,7 +269,19 @@ func writeSnapshot(_ snapshot: SnapshotModel, repoRoot: URL) throws {
   encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
 
   let data = try encoder.encode(snapshot)
-  try data.write(to: dir.appendingPathComponent("snapshot.json"), options: .atomic)
+  try data.write(
+    to: dir.appendingPathComponent("snapshot.json"),
+    options: .atomic
+  )
+}
+
+// MARK: - Utilities
+
+func relativePath(_ url: URL, base: URL) -> String {
+  let basePath = base.standardizedFileURL.path
+  let fullPath = url.standardizedFileURL.path
+  guard fullPath.hasPrefix(basePath) else { return fullPath }
+  return String(fullPath.dropFirst(basePath.count + 1))
 }
 
 // MARK: - Errors
