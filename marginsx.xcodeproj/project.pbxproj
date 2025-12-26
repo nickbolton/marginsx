@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		920CA4CF2EFEAF48007630C8 /* ArgumentParser in Frameworks */ = {isa = PBXBuildFile; productRef = 920CA4CE2EFEAF48007630C8 /* ArgumentParser */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXCopyFilesBuildPhase section */
 		920CA4C12EFD7675007630C8 /* CopyFiles */ = {
 			isa = PBXCopyFilesBuildPhase;
@@ -19,13 +23,13 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		920CA4C32EFD7675007630C8 /* Hydrate */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = Hydrate; sourceTree = BUILT_PRODUCTS_DIR; };
+		920CA4C32EFD7675007630C8 /* marginsx */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = marginsx; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		920CA4C52EFD7675007630C8 /* Hydrate */ = {
+		920CA4C52EFD7675007630C8 /* marginsx */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = Hydrate;
+			path = marginsx;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -35,6 +39,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				920CA4CF2EFEAF48007630C8 /* ArgumentParser in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -44,7 +49,7 @@
 		920CA4BA2EFD7675007630C8 = {
 			isa = PBXGroup;
 			children = (
-				920CA4C52EFD7675007630C8 /* Hydrate */,
+				920CA4C52EFD7675007630C8 /* marginsx */,
 				920CA4C42EFD7675007630C8 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -52,7 +57,7 @@
 		920CA4C42EFD7675007630C8 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				920CA4C32EFD7675007630C8 /* Hydrate */,
+				920CA4C32EFD7675007630C8 /* marginsx */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -60,9 +65,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		920CA4C22EFD7675007630C8 /* Hydrate */ = {
+		920CA4C22EFD7675007630C8 /* marginsx */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 920CA4CA2EFD7675007630C8 /* Build configuration list for PBXNativeTarget "Hydrate" */;
+			buildConfigurationList = 920CA4CA2EFD7675007630C8 /* Build configuration list for PBXNativeTarget "marginsx" */;
 			buildPhases = (
 				920CA4BF2EFD7675007630C8 /* Sources */,
 				920CA4C02EFD7675007630C8 /* Frameworks */,
@@ -73,13 +78,14 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				920CA4C52EFD7675007630C8 /* Hydrate */,
+				920CA4C52EFD7675007630C8 /* marginsx */,
 			);
-			name = Hydrate;
+			name = marginsx;
 			packageProductDependencies = (
+				920CA4CE2EFEAF48007630C8 /* ArgumentParser */,
 			);
-			productName = Hydrate;
-			productReference = 920CA4C32EFD7675007630C8 /* Hydrate */;
+			productName = marginsx;
+			productReference = 920CA4C32EFD7675007630C8 /* marginsx */;
 			productType = "com.apple.product-type.tool";
 		};
 /* End PBXNativeTarget section */
@@ -97,7 +103,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 920CA4BE2EFD7675007630C8 /* Build configuration list for PBXProject "Hydrate" */;
+			buildConfigurationList = 920CA4BE2EFD7675007630C8 /* Build configuration list for PBXProject "marginsx" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -106,12 +112,15 @@
 			);
 			mainGroup = 920CA4BA2EFD7675007630C8;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				920CA4CD2EFEAF48007630C8 /* XCRemoteSwiftPackageReference "swift-argument-parser" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 920CA4C42EFD7675007630C8 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				920CA4C22EFD7675007630C8 /* Hydrate */,
+				920CA4C22EFD7675007630C8 /* marginsx */,
 			);
 		};
 /* End PBXProject section */
@@ -276,7 +285,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		920CA4BE2EFD7675007630C8 /* Build configuration list for PBXProject "Hydrate" */ = {
+		920CA4BE2EFD7675007630C8 /* Build configuration list for PBXProject "marginsx" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				920CA4C82EFD7675007630C8 /* Debug */,
@@ -285,7 +294,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		920CA4CA2EFD7675007630C8 /* Build configuration list for PBXNativeTarget "Hydrate" */ = {
+		920CA4CA2EFD7675007630C8 /* Build configuration list for PBXNativeTarget "marginsx" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				920CA4CB2EFD7675007630C8 /* Debug */,
@@ -295,6 +304,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		920CA4CD2EFEAF48007630C8 /* XCRemoteSwiftPackageReference "swift-argument-parser" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-argument-parser.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.7.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		920CA4CE2EFEAF48007630C8 /* ArgumentParser */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 920CA4CD2EFEAF48007630C8 /* XCRemoteSwiftPackageReference "swift-argument-parser" */;
+			productName = ArgumentParser;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 920CA4BB2EFD7675007630C8 /* Project object */;
 }
