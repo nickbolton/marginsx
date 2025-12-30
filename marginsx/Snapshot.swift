@@ -66,6 +66,14 @@ struct Snapshot: ParsableCommand {
 
     try writeSnapshot(snapshot, repoRoot: repoRoot)
     printSnapshotSummary(snapshot)
+
+    let audit = auditSnapshotCoverage(
+      snapshot: snapshot,
+      repoFiles: repoFiles,
+      targets: targets
+    )
+    
+    printAuditSummary(audit)
   }
 }
 
@@ -194,7 +202,7 @@ func discoverPackages(
   return packages.sorted { $0.name < $1.name }
 }
 
-// MARK: - Package Index (SwiftPM, no caching)
+// MARK: - Product Index (SwiftPM)
 
 struct ProductIndex {
   struct ProductInfo {
@@ -217,8 +225,7 @@ struct ProductIndex {
 
       print("• Resolving SwiftPM package \(pkg.name)…")
       let describe = try runSwiftPackageDescribe(at: pkgRoot)
-      
-      // 1) Build per-target file sets
+
       var targetFilesByName: [String: Set<RepoFile>] = [:]
 
       for target in describe.targets where target.type == "library" {
@@ -249,7 +256,6 @@ struct ProductIndex {
         targetFilesByName[target.name] = files
       }
 
-      // 2) Union files per product
       for product in describe.products {
         var union: Set<RepoFile> = []
         for tName in product.targets {
@@ -258,16 +264,11 @@ struct ProductIndex {
           }
         }
 
-        // If duplicates exist across packages, last-wins is dangerous.
-        // Prefer first-wins to keep deterministic behavior, or log.
         if products[product.name] == nil {
           products[product.name] = ProductInfo(
             packageName: pkg.name,
             files: union
           )
-        } else {
-          // Optional: print a warning if you want visibility.
-          // print("⚠️ Duplicate product name '\(product.name)' found in \(pkg.name)")
         }
       }
     }
@@ -276,7 +277,7 @@ struct ProductIndex {
   }
 }
 
-// MARK: - SwiftPM describe (temp file output)
+// MARK: - SwiftPM describe
 
 func runSwiftPackageDescribe(at url: URL) throws -> SwiftPMDescribe {
   let fm = FileManager.default
@@ -306,7 +307,6 @@ func runSwiftPackageDescribe(at url: URL) throws -> SwiftPMDescribe {
   process.executableURL = URL(fileURLWithPath: "/usr/bin/swift")
   process.arguments = ["package", "describe", "--type", "json"]
   process.currentDirectoryURL = url
-  
   process.standardInput = FileHandle.nullDevice
   process.standardOutput = try FileHandle(forWritingTo: outFile)
   process.standardError = try FileHandle(forWritingTo: errFile)
@@ -383,9 +383,6 @@ enum SwiftPMError: Error, CustomStringConvertible {
   }
 }
 
-// MARK: - Repo Discovery, Import Index, Resolution, Exclusions, Output
-// (unchanged from your previous version)
-
 // MARK: - Repo Discovery
 
 func discoverRepoFiles(
@@ -401,10 +398,7 @@ func discoverRepoFiles(
 
   while let url = enumerator?.nextObject() as? URL {
     let relative = relativePath(url, base: repoRoot)
-
-    if isExcluded(relative, gitIgnore: gitIgnore, packages: packages) {
-      continue
-    }
+    if isExcluded(relative, gitIgnore: gitIgnore, packages: packages) { continue }
 
     var isDir: ObjCBool = false
     fm.fileExists(atPath: url.path, isDirectory: &isDir)
@@ -470,7 +464,7 @@ func buildImportIndex(
   return index
 }
 
-// MARK: - Target Resolution (Import Closure)
+// MARK: - Target Resolution
 
 func resolveTargets(
   targets: [TargetSpec],
@@ -483,7 +477,7 @@ func resolveTargets(
 
   return targets.map { target in
     var visitedFiles: Set<RepoFile> = []
-    var visitedImports: Set<String> = [] // products/modules we’ve already expanded
+    var visitedImports: Set<String> = []
     var queue: [RepoFile] = repoSourceFiles.filter {
       $0.path.hasPrefix(target.entryFolder + "/")
     }
@@ -494,7 +488,6 @@ func resolveTargets(
       for imp in importIndex[file] ?? [] {
         guard visitedImports.insert(imp).inserted else { continue }
 
-        // 1) Prefer SwiftPM product expansion
         if let product = productIndex.products[imp] {
           for f in product.files where !visitedFiles.contains(f) {
             queue.append(f)
@@ -502,12 +495,10 @@ func resolveTargets(
           continue
         }
 
-        // 2) Repo fallback: expand by *folder prefix* (not file suffix)
-        // Heuristics: support common layouts
         let prefixes = [
           "\(imp)/",
           "Sources/\(imp)/",
-          "\(target.entryFolder)/\(imp)/",        // if you nest modules under the target folder
+          "\(target.entryFolder)/\(imp)/",
           "\(target.entryFolder)/Sources/\(imp)/"
         ]
 
@@ -524,6 +515,65 @@ func resolveTargets(
       name: target.name,
       repoFiles: visitedFiles.sorted { $0.path < $1.path }
     )
+  }
+}
+
+// MARK: - Snapshot Audit
+
+struct SnapshotAuditResult {
+  let totalRepoFiles: Int
+  let coveredRepoFiles: Int
+  let uncoveredRepoFiles: [RepoFile]
+}
+
+func auditSnapshotCoverage(
+  snapshot: SnapshotModel,
+  repoFiles: [RepoFile],
+  targets: [TargetSpec]
+) -> SnapshotAuditResult {
+
+  // 1) Compute in-scope repo files (only under target entry folders)
+  let scopedRepoFiles = Set(
+    repoFiles.filter { file in
+      file.owner == .repo &&
+      targets.contains { target in
+        file.path.hasPrefix(target.entryFolder + "/")
+      }
+    }
+  )
+
+  // 2) Compute covered repo files
+  let coveredRepoFiles = Set(
+    snapshot.targets
+      .flatMap { $0.repoFiles }
+      .filter { $0.owner == .repo }
+  )
+
+  // 3) Compute uncovered (within scope only)
+  let uncovered = scopedRepoFiles
+    .subtracting(coveredRepoFiles)
+    .sorted { $0.path < $1.path }
+
+  return SnapshotAuditResult(
+    totalRepoFiles: scopedRepoFiles.count,
+    coveredRepoFiles: coveredRepoFiles.count,
+    uncoveredRepoFiles: uncovered
+  )
+}
+
+func printAuditSummary(_ audit: SnapshotAuditResult) {
+  print("")
+  print("🔍 Snapshot audit")
+  print("  Repo files discovered: \(audit.totalRepoFiles)")
+  print("  Repo files covered:    \(audit.coveredRepoFiles)")
+
+  if audit.uncoveredRepoFiles.isEmpty {
+    print("  ✔ All repo files are accounted for")
+  } else {
+    print("  ⚠️ Uncovered repo files: \(audit.uncoveredRepoFiles.count)")
+    for file in audit.uncoveredRepoFiles {
+      print("    - \(file.path)")
+    }
   }
 }
 
