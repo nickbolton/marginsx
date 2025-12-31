@@ -203,6 +203,11 @@ func removeEmptyDirectories(under root: URL) throws {
     .sorted { $0.path.count > $1.path.count } // deepest first
 
   for dir in directories {
+    var isDirectory: ObjCBool = false
+    fm.fileExists(atPath: dir.path, isDirectory: &isDirectory)
+
+    guard isDirectory.boolValue else { continue }
+
     let contents = try fm.contentsOfDirectory(
       at: dir,
       includingPropertiesForKeys: nil
@@ -224,3 +229,4 @@ func confirmPrune(count: Int) -> Bool {
 
   return readLine()?.lowercased() == "y"
 }
+
