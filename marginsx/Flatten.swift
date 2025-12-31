@@ -27,7 +27,23 @@ struct Flatten: ParsableCommand {
   )
   var clean: Bool = false
 
+  @Flag(
+    name: .long,
+    help: "Print full per-file output (source → destination)."
+  )
+  var verbose: Bool = false
+
+  @Flag(
+    name: .long,
+    help: "Suppress all per-file output."
+  )
+  var quiet: Bool = false
+
   func run() throws {
+    guard !(verbose && quiet) else {
+      throw ValidationError("--verbose and --quiet cannot be used together")
+    }
+
     let repoRoot = try Git.repoRoot()
 
     // --clean is a standalone operation
@@ -55,7 +71,9 @@ struct Flatten: ParsableCommand {
     try performFlatten(
       flattenMap,
       repoRoot: repoRoot,
-      overwrite: overwrite
+      overwrite: overwrite,
+      verbose: verbose,
+      quiet: quiet
     )
   }
 
@@ -205,12 +223,18 @@ func writeFlattenMap(
 func performFlatten(
   _ map: FlattenMap,
   repoRoot: URL,
-  overwrite: Bool
+  overwrite: Bool,
+  verbose: Bool,
+  quiet: Bool
 ) throws {
 
   guard let destinationPath = map.destination else {
-    print("ℹ️  Dry run — no destination specified")
-    printPlannedOperations(map, repoRoot: repoRoot)
+    if !quiet {
+      print("ℹ️  Dry run — no destination specified")
+      if verbose {
+        printPlannedOperations(map, repoRoot: repoRoot)
+      }
+    }
     return
   }
 
@@ -229,7 +253,9 @@ func performFlatten(
   var copiedCount = 0
   var overwriteAll = overwrite
 
-  print("▶ Copying \(totalFiles) files")
+  if !quiet {
+    print("▶ Copying \(totalFiles) files")
+  }
 
   for target in map.targets {
     for file in target.files {
@@ -249,7 +275,9 @@ func performFlatten(
           let decision = promptForOverwrite(destinationURL)
           switch decision {
           case .no:
-            print("⏭ Skipped \(processed)/\(totalFiles)")
+            if !quiet {
+              print("⏭ Skipped \(processed)/\(totalFiles)")
+            }
             continue
           case .yes:
             break
@@ -261,17 +289,22 @@ func performFlatten(
         try fm.removeItem(at: destinationURL)
       }
 
-      try fm.copyItem(
-        at: sourceURL,
-        to: destinationURL
-      )
-
+      try fm.copyItem(at: sourceURL, to: destinationURL)
       copiedCount += 1
+
+      if quiet {
+        continue
+      }
+
       print("✔ Copied \(processed)/\(totalFiles)")
+
+      if verbose {
+        print("  \(sourceURL.path) → \(file.flattenedPath)")
+      }
     }
   }
 
-  print("✔ Finished — copied \(copiedCount) files to \(destinationRoot.path)")
+  print("✔ Finished — copied \(copiedCount) files")
 }
 
 // MARK: - Confirmation Prompts
@@ -283,11 +316,7 @@ func confirmClean(_ url: URL) -> Bool {
   Continue? [y/N]:
   """, terminator: " ")
 
-  guard let input = readLine()?.lowercased() else {
-    return false
-  }
-
-  return input == "y"
+  return readLine()?.lowercased() == "y"
 }
 
 enum OverwriteDecision {
@@ -303,17 +332,10 @@ func promptForOverwrite(_ url: URL) -> OverwriteDecision {
   Overwrite? [y/N/a]:
   """, terminator: " ")
 
-  guard let input = readLine()?.lowercased() else {
-    return .no
-  }
-
-  switch input {
-  case "y":
-    return .yes
-  case "a":
-    return .all
-  default:
-    return .no
+  switch readLine()?.lowercased() {
+  case "y": return .yes
+  case "a": return .all
+  default: return .no
   }
 }
 
