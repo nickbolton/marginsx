@@ -9,6 +9,12 @@ struct Flatten: ParsableCommand {
     abstract: "Flatten a snapshot into a target-scoped source tree."
   )
 
+  @Option(
+    name: .long,
+    help: "Destination root where flattened files will be copied (target project folder)."
+  )
+  var destination: String?
+
   func run() throws {
     let repoRoot = try Git.repoRoot()
 
@@ -17,7 +23,10 @@ struct Flatten: ParsableCommand {
 
     let snapshot = try loadSnapshot(from: snapshotURL)
 
-    let flattenMap = buildFlattenMap(snapshot: snapshot)
+    let flattenMap = buildFlattenMap(
+      snapshot: snapshot,
+      destination: destination
+    )
 
     let flattenedRoot = repoRoot
       .appendingPathComponent(".marginsx/flattened", isDirectory: true)
@@ -31,6 +40,7 @@ struct Flatten: ParsableCommand {
 
 struct FlattenMap: Codable {
   let createdAt: String
+  let destination: String?
   let targets: [FlattenedTarget]
 }
 
@@ -48,7 +58,11 @@ struct FlattenedFile: Codable {
 
 // MARK: - Build Flatten Map
 
-func buildFlattenMap(snapshot: SnapshotModel) -> FlattenMap {
+func buildFlattenMap(
+  snapshot: SnapshotModel,
+  destination: String?
+) -> FlattenMap {
+
   let timestamp = ISO8601DateFormatter().string(from: Date())
 
   let targets: [FlattenedTarget] = snapshot.targets.map { target in
@@ -94,6 +108,7 @@ func buildFlattenMap(snapshot: SnapshotModel) -> FlattenMap {
 
   return FlattenMap(
     createdAt: timestamp,
+    destination: destination,
     targets: targets
   )
 }
@@ -131,6 +146,12 @@ func writeFlattenMap(
 func printFlattenSummary(_ map: FlattenMap) {
   print("✔ Flatten plan created")
   print("  Targets: \(map.targets.count)")
+
+  if let destination = map.destination {
+    print("  Destination: \(destination)")
+  } else {
+    print("  Destination: (not specified)")
+  }
 
   for target in map.targets {
     let sourceCount = target.files.filter { $0.kind == .source }.count
