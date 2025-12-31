@@ -11,7 +11,7 @@ struct Flatten: ParsableCommand {
 
   @Option(
     name: .long,
-    help: "Destination root where flattened files will be copied (target project folder)."
+    help: "Destination root where flattened files will be copied (target project folder). Omit for dry run."
   )
   var destination: String?
 
@@ -33,6 +33,11 @@ struct Flatten: ParsableCommand {
 
     try writeFlattenMap(flattenMap, to: flattenedRoot)
     printFlattenSummary(flattenMap)
+
+    try performFlatten(
+      flattenMap,
+      repoRoot: repoRoot
+    )
   }
 }
 
@@ -141,6 +146,74 @@ func writeFlattenMap(
   )
 }
 
+// MARK: - Flatten Execution
+
+func performFlatten(
+  _ map: FlattenMap,
+  repoRoot: URL
+) throws {
+
+  guard let destinationPath = map.destination else {
+    print("ℹ️  Dry run — no destination specified")
+    printPlannedOperations(map, repoRoot: repoRoot)
+    return
+  }
+
+  let fm = FileManager.default
+  let destinationRoot = URL(fileURLWithPath: destinationPath, isDirectory: true)
+
+  if !fm.fileExists(atPath: destinationRoot.path) {
+    try fm.createDirectory(
+      at: destinationRoot,
+      withIntermediateDirectories: true
+    )
+  }
+
+  var copiedCount = 0
+
+  for target in map.targets {
+    for file in target.files {
+      let sourceURL = repoRoot.appendingPathComponent(file.originalPath)
+      let destinationURL =
+        destinationRoot.appendingPathComponent(file.flattenedPath)
+
+      try fm.createDirectory(
+        at: destinationURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+      )
+
+      if fm.fileExists(atPath: destinationURL.path) {
+        // For now: skip existing files (no overwrite semantics yet)
+        continue
+      }
+
+      try fm.copyItem(
+        at: sourceURL,
+        to: destinationURL
+      )
+
+      copiedCount += 1
+    }
+  }
+
+  print("✔ Copied \(copiedCount) files to \(destinationRoot.path)")
+}
+
+// MARK: - Dry Run Output
+
+func printPlannedOperations(
+  _ map: FlattenMap,
+  repoRoot: URL
+) {
+  for target in map.targets {
+    for file in target.files {
+      let source = repoRoot.appendingPathComponent(file.originalPath).path
+      let destination = file.flattenedPath
+      print("  \(source) → \(destination)")
+    }
+  }
+}
+
 // MARK: - Output
 
 func printFlattenSummary(_ map: FlattenMap) {
@@ -150,7 +223,7 @@ func printFlattenSummary(_ map: FlattenMap) {
   if let destination = map.destination {
     print("  Destination: \(destination)")
   } else {
-    print("  Destination: (not specified)")
+    print("  Destination: (dry run)")
   }
 
   for target in map.targets {
