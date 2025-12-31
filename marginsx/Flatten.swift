@@ -35,9 +35,21 @@ struct Flatten: ParsableCommand {
 
   @Flag(
     name: .long,
-    help: "Suppress all per-file output."
+    help: "Suppress per-file output."
   )
   var quiet: Bool = false
+
+  @Flag(
+    name: .long,
+    help: "Suppress all output, including summaries."
+  )
+  var silent: Bool = false
+
+  @Flag(
+    name: .long,
+    help: "Assume yes for all prompts (implies overwrite)."
+  )
+  var force: Bool = false
 
   func run() throws {
     guard !(verbose && quiet) else {
@@ -66,14 +78,18 @@ struct Flatten: ParsableCommand {
       .appendingPathComponent(".marginsx/flattened", isDirectory: true)
 
     try writeFlattenMap(flattenMap, to: flattenedRoot)
-    printFlattenSummary(flattenMap)
+
+    if !silent {
+      printFlattenSummary(flattenMap)
+    }
 
     try performFlatten(
       flattenMap,
       repoRoot: repoRoot,
-      overwrite: overwrite,
+      overwrite: overwrite || force,
       verbose: verbose,
-      quiet: quiet
+      quiet: quiet,
+      silent: silent
     )
   }
 
@@ -88,8 +104,10 @@ struct Flatten: ParsableCommand {
     let destinationRoot = URL(fileURLWithPath: destination, isDirectory: true)
 
     if fm.fileExists(atPath: destinationRoot.path) {
-      guard confirmClean(destinationRoot) else {
-        throw ValidationError("Aborted — destination not cleaned.")
+      if !force {
+        guard confirmClean(destinationRoot) else {
+          throw ValidationError("Aborted — destination not cleaned.")
+        }
       }
 
       let contents = try fm.contentsOfDirectory(
@@ -101,14 +119,18 @@ struct Flatten: ParsableCommand {
         try fm.removeItem(at: item)
       }
 
-      print("✔ Cleaned destination: \(destinationRoot.path)")
+      if !silent {
+        print("✔ Cleaned destination: \(destinationRoot.path)")
+      }
     } else {
       try fm.createDirectory(
         at: destinationRoot,
         withIntermediateDirectories: true
       )
 
-      print("✔ Created empty destination: \(destinationRoot.path)")
+      if !silent {
+        print("✔ Created empty destination: \(destinationRoot.path)")
+      }
     }
   }
 }
@@ -225,16 +247,11 @@ func performFlatten(
   repoRoot: URL,
   overwrite: Bool,
   verbose: Bool,
-  quiet: Bool
+  quiet: Bool,
+  silent: Bool
 ) throws {
 
   guard let destinationPath = map.destination else {
-    if !quiet {
-      print("ℹ️  Dry run — no destination specified")
-      if verbose {
-        printPlannedOperations(map, repoRoot: repoRoot)
-      }
-    }
     return
   }
 
@@ -251,9 +268,8 @@ func performFlatten(
   let totalFiles = map.targets.reduce(0) { $0 + $1.files.count }
   var processed = 0
   var copiedCount = 0
-  var overwriteAll = overwrite
 
-  if !quiet {
+  if !quiet && !silent {
     print("▶ Copying \(totalFiles) files")
   }
 
@@ -271,18 +287,10 @@ func performFlatten(
       )
 
       if fm.fileExists(atPath: destinationURL.path) {
-        if !overwriteAll {
+        if !overwrite {
           let decision = promptForOverwrite(destinationURL)
-          switch decision {
-          case .no:
-            if !quiet {
-              print("⏭ Skipped \(processed)/\(totalFiles)")
-            }
+          if decision == .no {
             continue
-          case .yes:
-            break
-          case .all:
-            overwriteAll = true
           }
         }
 
@@ -292,7 +300,7 @@ func performFlatten(
       try fm.copyItem(at: sourceURL, to: destinationURL)
       copiedCount += 1
 
-      if quiet {
+      if silent || quiet {
         continue
       }
 
@@ -304,7 +312,9 @@ func performFlatten(
     }
   }
 
-  print("✔ Finished — copied \(copiedCount) files")
+  if !silent {
+    print("✔ Finished — copied \(copiedCount) files")
+  }
 }
 
 // MARK: - Confirmation Prompts
@@ -336,21 +346,6 @@ func promptForOverwrite(_ url: URL) -> OverwriteDecision {
   case "y": return .yes
   case "a": return .all
   default: return .no
-  }
-}
-
-// MARK: - Dry Run Output
-
-func printPlannedOperations(
-  _ map: FlattenMap,
-  repoRoot: URL
-) {
-  for target in map.targets {
-    for file in target.files {
-      let source = repoRoot.appendingPathComponent(file.originalPath).path
-      let destination = file.flattenedPath
-      print("  \(source) → \(destination)")
-    }
   }
 }
 
