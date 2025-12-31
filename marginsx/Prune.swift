@@ -54,10 +54,14 @@ struct Prune: ParsableCommand {
     let expectedFiles =
       computeExpectedFiles(flattenMap, destinationRoot: destinationRoot)
 
+    let pruneRoots =
+      computePruneRoots(flattenMap, destinationRoot: destinationRoot)
+
     let orphanFiles =
       findOrphanFiles(
         destinationRoot: destinationRoot,
-        expectedFiles: expectedFiles
+        expectedFiles: expectedFiles,
+        pruneRoots: pruneRoots
       )
 
     guard !orphanFiles.isEmpty else {
@@ -105,6 +109,18 @@ func loadFlattenMap(from url: URL) throws -> FlattenMap {
   return try JSONDecoder().decode(FlattenMap.self, from: data)
 }
 
+func computePruneRoots(
+  _ map: FlattenMap,
+  destinationRoot: URL
+) -> [URL] {
+
+  let roots = map.targets.map {
+    destinationRoot.appendingPathComponent($0.name)
+  }
+
+  return roots.map { $0.standardizedFileURL }
+}
+
 func computeExpectedFiles(
   _ map: FlattenMap,
   destinationRoot: URL
@@ -126,7 +142,8 @@ func computeExpectedFiles(
 
 func findOrphanFiles(
   destinationRoot: URL,
-  expectedFiles: Set<URL>
+  expectedFiles: Set<URL>,
+  pruneRoots: [URL]
 ) -> [URL] {
 
   let fm = FileManager.default
@@ -147,6 +164,12 @@ func findOrphanFiles(
     guard values?.isRegularFile == true else { continue }
 
     let standardized = fileURL.standardizedFileURL
+
+    // ✅ Only prune inside flatten scope
+    guard pruneRoots.contains(where: { standardized.path.hasPrefix($0.path) }) else {
+      continue
+    }
+
     if !expectedFiles.contains(standardized) {
       orphans.append(standardized)
     }
