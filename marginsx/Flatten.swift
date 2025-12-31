@@ -269,6 +269,9 @@ func performFlatten(
   var processed = 0
   var copiedCount = 0
 
+  // ✅ FIX: persist overwrite-all decision
+  var overwriteAll = overwrite
+
   if !quiet && !silent {
     print("▶ Copying \(totalFiles) files")
   }
@@ -287,10 +290,15 @@ func performFlatten(
       )
 
       if fm.fileExists(atPath: destinationURL.path) {
-        if !overwrite {
+        if !overwriteAll {
           let decision = promptForOverwrite(destinationURL)
-          if decision == .no {
+          switch decision {
+          case .no:
             continue
+          case .yes:
+            break
+          case .all:
+            overwriteAll = true
           }
         }
 
