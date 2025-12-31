@@ -15,6 +15,12 @@ struct Flatten: ParsableCommand {
   )
   var destination: String?
 
+  @Flag(
+    name: .long,
+    help: "Overwrite existing files without prompting."
+  )
+  var overwrite: Bool = false
+
   func run() throws {
     let repoRoot = try Git.repoRoot()
 
@@ -36,7 +42,8 @@ struct Flatten: ParsableCommand {
 
     try performFlatten(
       flattenMap,
-      repoRoot: repoRoot
+      repoRoot: repoRoot,
+      overwrite: overwrite
     )
   }
 }
@@ -150,7 +157,8 @@ func writeFlattenMap(
 
 func performFlatten(
   _ map: FlattenMap,
-  repoRoot: URL
+  repoRoot: URL,
+  overwrite: Bool
 ) throws {
 
   guard let destinationPath = map.destination else {
@@ -170,6 +178,7 @@ func performFlatten(
   }
 
   var copiedCount = 0
+  var overwriteAll = overwrite
 
   for target in map.targets {
     for file in target.files {
@@ -183,8 +192,19 @@ func performFlatten(
       )
 
       if fm.fileExists(atPath: destinationURL.path) {
-        // For now: skip existing files (no overwrite semantics yet)
-        continue
+        if !overwriteAll {
+          let decision = promptForOverwrite(destinationURL)
+          switch decision {
+          case .no:
+            continue
+          case .yes:
+            break
+          case .all:
+            overwriteAll = true
+          }
+        }
+
+        try fm.removeItem(at: destinationURL)
       }
 
       try fm.copyItem(
@@ -197,6 +217,35 @@ func performFlatten(
   }
 
   print("✔ Copied \(copiedCount) files to \(destinationRoot.path)")
+}
+
+// MARK: - Overwrite Prompt
+
+enum OverwriteDecision {
+  case yes
+  case no
+  case all
+}
+
+func promptForOverwrite(_ url: URL) -> OverwriteDecision {
+  print("""
+  File exists:
+    \(url.path)
+  Overwrite? [y/N/a]:
+  """, terminator: " ")
+
+  guard let input = readLine()?.lowercased() else {
+    return .no
+  }
+
+  switch input {
+  case "y":
+    return .yes
+  case "a":
+    return .all
+  default:
+    return .no
+  }
 }
 
 // MARK: - Dry Run Output
