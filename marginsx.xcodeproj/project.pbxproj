@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		920C5B782F053C9D004A8EBA /* CLISpinner in Frameworks */ = {isa = PBXBuildFile; productRef = 920C5B772F053C9D004A8EBA /* CLISpinner */; };
 		920CA4CF2EFEAF48007630C8 /* ArgumentParser in Frameworks */ = {isa = PBXBuildFile; productRef = 920CA4CE2EFEAF48007630C8 /* ArgumentParser */; };
 /* End PBXBuildFile section */
 
@@ -40,6 +41,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				920CA4CF2EFEAF48007630C8 /* ArgumentParser in Frameworks */,
+				920C5B782F053C9D004A8EBA /* CLISpinner in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -83,6 +85,7 @@
 			name = marginsx;
 			packageProductDependencies = (
 				920CA4CE2EFEAF48007630C8 /* ArgumentParser */,
+				920C5B772F053C9D004A8EBA /* CLISpinner */,
 			);
 			productName = marginsx;
 			productReference = 920CA4C32EFD7675007630C8 /* marginsx */;
@@ -114,6 +117,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				920CA4CD2EFEAF48007630C8 /* XCRemoteSwiftPackageReference "swift-argument-parser" */,
+				920C5B762F053C9D004A8EBA /* XCRemoteSwiftPackageReference "CLISpinner" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 920CA4C42EFD7675007630C8 /* Products */;
@@ -306,6 +310,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		920C5B762F053C9D004A8EBA /* XCRemoteSwiftPackageReference "CLISpinner" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/kiliankoe/CLISpinner";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.4.0;
+			};
+		};
 		920CA4CD2EFEAF48007630C8 /* XCRemoteSwiftPackageReference "swift-argument-parser" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/apple/swift-argument-parser.git";
@@ -317,6 +329,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		920C5B772F053C9D004A8EBA /* CLISpinner */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 920C5B762F053C9D004A8EBA /* XCRemoteSwiftPackageReference "CLISpinner" */;
+			productName = CLISpinner;
+		};
 		920CA4CE2EFEAF48007630C8 /* ArgumentParser */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 920CA4CD2EFEAF48007630C8 /* XCRemoteSwiftPackageReference "swift-argument-parser" */;

@@ -1,5 +1,7 @@
 import Foundation
 import ArgumentParser
+import CLISpinner
+import Rainbow
 
 // MARK: - Flatten Command
 
@@ -80,6 +82,7 @@ struct Flatten: ParsableCommand {
 
     if !silent {
       printFlattenSummary(flattenMap)
+      flushStdout()
     }
 
     try performFlatten(
@@ -120,6 +123,7 @@ struct Flatten: ParsableCommand {
 
       if !silent {
         print("✔ Cleaned destination: \(destinationRoot.path)")
+        flushStdout()
       }
     } else {
       try fm.createDirectory(
@@ -129,9 +133,17 @@ struct Flatten: ParsableCommand {
 
       if !silent {
         print("✔ Created empty destination: \(destinationRoot.path)")
+        flushStdout()
       }
     }
   }
+}
+
+// MARK: - Stdout Flush
+
+@inline(__always)
+func flushStdout() {
+  FileHandle.standardOutput.synchronizeFile()
 }
 
 // MARK: - Models
@@ -239,19 +251,6 @@ func writeFlattenMap(
   )
 }
 
-// MARK: - Spinner
-
-struct Spinner {
-  private let frames = ["|", "/", "-", "\\"]
-  private var index = 0
-
-  mutating func next() -> String {
-    let frame = frames[index]
-    index = (index + 1) % frames.count
-    return frame
-  }
-}
-
 // MARK: - Flatten Execution
 
 func performFlatten(
@@ -281,17 +280,35 @@ func performFlatten(
   var processed = 0
   var copiedCount = 0
   var overwriteAll = overwrite
-  var spinner = Spinner()
+  let spinner = Spinner(
+    pattern: .dots,
+    text: "Copying \(totalFiles) files",
+    speed: 0.8,
+    color: .lightCyan
+  )
 
   let showSpinner = !verbose && !quiet && !silent
   let showProgress = !quiet && !silent
 
+  let perFileDelay: TimeInterval = {
+    guard showSpinner else { return 0 }
+    let raw = 0.5 / Double(max(totalFiles, 1))
+    return min(max(raw, 0.0005), 0.05)
+  }()
+  
+
   if showProgress {
     print("▶ Copying \(totalFiles) files")
+    flushStdout()
   }
 
   for target in map.targets {
     for file in target.files {
+      if showSpinner {
+        spinner.start()
+        Thread.sleep(forTimeInterval: perFileDelay)
+      }
+
       processed += 1
 
       let sourceURL = repoRoot.appendingPathComponent(file.originalPath)
@@ -305,6 +322,9 @@ func performFlatten(
 
       if fm.fileExists(atPath: destinationURL.path) {
         if !overwriteAll {
+          if showSpinner {
+            spinner.stop()
+          }
           let decision = promptForOverwrite(destinationURL)
           switch decision {
           case .no:
@@ -324,16 +344,14 @@ func performFlatten(
 
       guard showProgress else { continue }
 
-      if showSpinner {
-        let line = "\(spinner.next()) Copied \(processed) / \(totalFiles)"
-        print("\r\(line)", terminator: "")
-        FileHandle.standardOutput.synchronizeFile()
-      } else {
+      if !showSpinner {
         print("✔ Copied \(processed) / \(totalFiles)")
+        flushStdout()
       }
 
       if verbose {
         print("  \(sourceURL.path) → \(file.flattenedPath)")
+        flushStdout()
       }
     }
   }
@@ -341,10 +359,10 @@ func performFlatten(
   guard !silent else { return }
 
   if showSpinner {
-    let finalLine = "✅ Copied \(copiedCount) / \(totalFiles)"
-    print("\r\(finalLine)")
+    spinner.succeed(text: "Copied \(processed) / \(totalFiles)")
   } else {
     print("✔ Finished — copied \(copiedCount) files")
+    flushStdout()
   }
 }
 
@@ -356,6 +374,7 @@ func confirmClean(_ url: URL) -> Bool {
     \(url.path)
   Continue? [y/N]:
   """, terminator: " ")
+  flushStdout()
 
   return readLine()?.lowercased() == "y"
 }
@@ -372,6 +391,7 @@ func promptForOverwrite(_ url: URL) -> OverwriteDecision {
     \(url.path)
   Overwrite? [y/N/a]:
   """, terminator: " ")
+  flushStdout()
 
   switch readLine()?.lowercased() {
   case "y": return .yes
