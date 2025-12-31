@@ -21,8 +21,20 @@ struct Flatten: ParsableCommand {
   )
   var overwrite: Bool = false
 
+  @Flag(
+    name: .long,
+    help: "Remove all contents inside the destination directory and exit."
+  )
+  var clean: Bool = false
+
   func run() throws {
     let repoRoot = try Git.repoRoot()
+
+    // --clean is a standalone operation
+    if clean {
+      try performClean(repoRoot: repoRoot)
+      return
+    }
 
     let snapshotURL = repoRoot
       .appendingPathComponent(".marginsx/snapshot/snapshot.json")
@@ -45,6 +57,41 @@ struct Flatten: ParsableCommand {
       repoRoot: repoRoot,
       overwrite: overwrite
     )
+  }
+
+  // MARK: - Clean
+
+  private func performClean(repoRoot: URL) throws {
+    guard let destination else {
+      throw ValidationError("--clean requires --destination")
+    }
+
+    let fm = FileManager.default
+    let destinationRoot = URL(fileURLWithPath: destination, isDirectory: true)
+
+    if fm.fileExists(atPath: destinationRoot.path) {
+      guard confirmClean(destinationRoot) else {
+        throw ValidationError("Aborted — destination not cleaned.")
+      }
+
+      let contents = try fm.contentsOfDirectory(
+        at: destinationRoot,
+        includingPropertiesForKeys: nil
+      )
+
+      for item in contents {
+        try fm.removeItem(at: item)
+      }
+
+      print("✔ Cleaned destination: \(destinationRoot.path)")
+    } else {
+      try fm.createDirectory(
+        at: destinationRoot,
+        withIntermediateDirectories: true
+      )
+
+      print("✔ Created empty destination: \(destinationRoot.path)")
+    }
   }
 }
 
@@ -101,7 +148,7 @@ func buildFlattenMap(
         }
 
         let flattenedPath =
-          "Targets/\(target.name)/\(topLevel)/\(ownerPath)/\(file.path)"
+          "\(target.name)/\(topLevel)/\(ownerPath)/\(file.path)"
 
         return FlattenedFile(
           originalPath: file.path,
@@ -177,11 +224,17 @@ func performFlatten(
     )
   }
 
+  let totalFiles = map.targets.reduce(0) { $0 + $1.files.count }
+  var processed = 0
   var copiedCount = 0
   var overwriteAll = overwrite
 
+  print("▶ Copying \(totalFiles) files")
+
   for target in map.targets {
     for file in target.files {
+      processed += 1
+
       let sourceURL = repoRoot.appendingPathComponent(file.originalPath)
       let destinationURL =
         destinationRoot.appendingPathComponent(file.flattenedPath)
@@ -196,6 +249,7 @@ func performFlatten(
           let decision = promptForOverwrite(destinationURL)
           switch decision {
           case .no:
+            print("⏭ Skipped \(processed)/\(totalFiles)")
             continue
           case .yes:
             break
@@ -213,13 +267,28 @@ func performFlatten(
       )
 
       copiedCount += 1
+      print("✔ Copied \(processed)/\(totalFiles)")
     }
   }
 
-  print("✔ Copied \(copiedCount) files to \(destinationRoot.path)")
+  print("✔ Finished — copied \(copiedCount) files to \(destinationRoot.path)")
 }
 
-// MARK: - Overwrite Prompt
+// MARK: - Confirmation Prompts
+
+func confirmClean(_ url: URL) -> Bool {
+  print("""
+  ⚠️  This will REMOVE ALL CONTENTS inside:
+    \(url.path)
+  Continue? [y/N]:
+  """, terminator: " ")
+
+  guard let input = readLine()?.lowercased() else {
+    return false
+  }
+
+  return input == "y"
+}
 
 enum OverwriteDecision {
   case yes
