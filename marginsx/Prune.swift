@@ -3,44 +3,43 @@ import ArgumentParser
 
 // MARK: - Flatten Prune Command
 
-struct Prune: ParsableCommand {
-
+struct PruneCommand: ParsableCommand {
+  
   static let configuration = CommandConfiguration(
     commandName: "prune",
     abstract: "Remove files in destination not defined by the flatten plan."
   )
-
-  @Option(
-    name: .long,
-    help: "Destination root to prune (must match flatten destination)."
-  )
-  var destination: String
-
+  
+  @OptionGroup var destinationOptions: RequiredDestinationOptions
+  @OptionGroup var output: OutputOptions
+  @OptionGroup var destructive: DestructiveOptions
+  
   @Flag(
     name: .long,
     help: "Show what would be removed without deleting anything."
   )
   var dryRun: Bool = false
-
-  @Flag(
-    name: .long,
-    help: "Delete without prompting."
-  )
-  var force: Bool = false
-
-  @Flag(
-    name: .long,
-    help: "Suppress per-file output."
-  )
-  var quiet: Bool = false
-
-  @Flag(
-    name: .long,
-    help: "Suppress all output."
-  )
-  var silent: Bool = false
-
+  
   func run() throws {
+    try Prune(
+      destination: destinationOptions.destination,
+      quiet: output.quiet,
+      silent: output.silent,
+      force: destructive.force,
+      dryRun: dryRun
+    ).execute()
+  }
+}
+
+struct Prune {
+
+  let destination: String
+  let quiet: Bool
+  let silent: Bool
+  let force: Bool
+  let dryRun: Bool
+
+  func execute() throws {
     let repoRoot = try Git.repoRoot()
 
     let flattenMapURL = repoRoot

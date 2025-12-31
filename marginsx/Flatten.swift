@@ -5,55 +5,42 @@ import Rainbow
 
 // MARK: - Flatten Command
 
-struct Flatten: ParsableCommand {
-
+struct FlattenCommand: ParsableCommand {
+  
   static let configuration = CommandConfiguration(
+    commandName: "flatten",
     abstract: "Flatten a snapshot into a target-scoped source tree."
   )
-
-  @Option(
-    name: .long,
-    help: "Destination root where flattened files will be copied (target project folder). Omit for dry run."
-  )
-  var destination: String?
-
-  @Flag(
-    name: .long,
-    help: "Overwrite existing files without prompting."
-  )
-  var overwrite: Bool = false
-
-  @Flag(
-    name: .long,
-    help: "Remove all contents inside the destination directory and exit."
-  )
-  var clean: Bool = false
-
-  @Flag(
-    name: .long,
-    help: "Print full per-file output (source → destination)."
-  )
-  var verbose: Bool = false
-
-  @Flag(
-    name: .long,
-    help: "Suppress per-file output."
-  )
-  var quiet: Bool = false
-
-  @Flag(
-    name: .long,
-    help: "Suppress all output, including summaries."
-  )
-  var silent: Bool = false
-
-  @Flag(
-    name: .long,
-    help: "Assume yes for all prompts (implies overwrite)."
-  )
-  var force: Bool = false
-
+  
+  @OptionGroup var destinationOptions: OptionalDestinationOptions
+  @OptionGroup var output: OutputOptions
+  @OptionGroup var destructive: DestructiveOptions
+  
   func run() throws {
+    try Flatten(
+      destination: destinationOptions.destination,
+      verbose: output.verbose,
+      quiet: output.quiet,
+      silent: output.silent,
+      force: destructive.force,
+      clean: destructive.clean,
+      overwrite: destructive.overwrite
+    ).execute()
+  }
+}
+
+struct Flatten {
+  
+  let destination: String?
+  let verbose: Bool
+  let quiet: Bool
+  let silent: Bool
+  let force: Bool
+  let clean: Bool
+  let overwrite: Bool
+  
+  func execute() throws {
+
     guard !(verbose && quiet) else {
       throw ValidationError("--verbose and --quiet cannot be used together")
     }
@@ -61,7 +48,13 @@ struct Flatten: ParsableCommand {
     let repoRoot = try Git.repoRoot()
 
     if clean {
-      try performClean(repoRoot: repoRoot)
+      try performClean(
+        repoRoot: repoRoot,
+        destination: destination,
+        force: force,
+        quiet: quiet,
+        silent: silent
+      )
       return
     }
 
@@ -97,7 +90,13 @@ struct Flatten: ParsableCommand {
 
   // MARK: - Clean
 
-  private func performClean(repoRoot: URL) throws {
+  private func performClean(
+    repoRoot: URL,
+    destination: String?,
+    force: Bool,
+    quiet: Bool,
+    silent: Bool
+  ) throws {
     guard let destination else {
       throw ValidationError("--clean requires --destination")
     }

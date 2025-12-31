@@ -3,9 +3,10 @@ import ArgumentParser
 
 // MARK: - Snapshot Command
 
-struct Snapshot: ParsableCommand {
+struct SnapshotCommand: ParsableCommand {
 
   static let configuration = CommandConfiguration(
+    commandName: "snapshot",
     abstract: "Capture a filesystem-authoritative snapshot using SwiftPM-assisted import closure."
   )
 
