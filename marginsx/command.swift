@@ -11,6 +11,7 @@ struct MarginsX: ParsableCommand {
     subcommands: [
       Snapshot.self,
       Flatten.self,
+      Prune.self,
       Rehydrate.self
     ]
   )
