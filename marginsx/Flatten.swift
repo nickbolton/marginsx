@@ -58,7 +58,6 @@ struct Flatten: ParsableCommand {
 
     let repoRoot = try Git.repoRoot()
 
-    // --clean is a standalone operation
     if clean {
       try performClean(repoRoot: repoRoot)
       return
@@ -284,7 +283,10 @@ func performFlatten(
   var overwriteAll = overwrite
   var spinner = Spinner()
 
-  if !quiet && !silent {
+  let showSpinner = !verbose && !quiet && !silent
+  let showProgress = !quiet && !silent
+
+  if showProgress {
     print("▶ Copying \(totalFiles) files")
   }
 
@@ -320,25 +322,28 @@ func performFlatten(
       try fm.copyItem(at: sourceURL, to: destinationURL)
       copiedCount += 1
 
-      if silent || quiet {
-        continue
+      guard showProgress else { continue }
+
+      if showSpinner {
+        let line = "\(spinner.next()) Copied \(processed) / \(totalFiles)"
+        print("\r\(line)", terminator: "")
+        FileHandle.standardOutput.synchronizeFile()
+      } else {
+        print("✔ Copied \(processed) / \(totalFiles)")
       }
 
-      let line =
-        "\(spinner.next()) Copied \(processed) / \(totalFiles)"
-
-      print("\r\(line)", terminator: "")
-      FileHandle.standardOutput.synchronizeFile()
-
       if verbose {
-        print()
         print("  \(sourceURL.path) → \(file.flattenedPath)")
       }
     }
   }
 
-  if !silent {
-    print()
+  guard !silent else { return }
+
+  if showSpinner {
+    let finalLine = "✅ Copied \(copiedCount) / \(totalFiles)"
+    print("\r\(finalLine)")
+  } else {
     print("✔ Finished — copied \(copiedCount) files")
   }
 }
