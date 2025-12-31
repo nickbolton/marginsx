@@ -262,12 +262,22 @@ func performFlatten(
   silent: Bool
 ) throws {
 
-  guard let destinationPath = map.destination else {
+  // MARK: - Dry Run
+
+  guard
+    let destination = map.destination
+  else {
+    printDryRun(
+      map,
+      repoRoot: repoRoot,
+      quiet: quiet,
+      silent: silent
+    )
     return
   }
 
   let fm = FileManager.default
-  let destinationRoot = URL(fileURLWithPath: destinationPath, isDirectory: true)
+  let destinationRoot = URL(fileURLWithPath: destination, isDirectory: true)
 
   if !fm.fileExists(atPath: destinationRoot.path) {
     try fm.createDirectory(
@@ -295,7 +305,6 @@ func performFlatten(
     let raw = 0.5 / Double(max(totalFiles, 1))
     return min(max(raw, 0.0005), 0.05)
   }()
-  
 
   if showProgress {
     print("▶ Copying \(totalFiles) files")
@@ -364,6 +373,26 @@ func performFlatten(
     print("✔ Finished — copied \(copiedCount) files")
     flushStdout()
   }
+}
+
+func printDryRun(
+  _ map: FlattenMap,
+  repoRoot: URL,
+  quiet: Bool,
+  silent: Bool
+) {
+  guard !quiet && !silent else { return }
+
+  for target in map.targets {
+    for file in target.files {
+      let sourceURL = repoRoot.appendingPathComponent(file.originalPath)
+      print("  \(sourceURL.path) → \(file.flattenedPath)")
+    }
+  }
+
+  guard !map.targets.allSatisfy({ $0.files.isEmpty }) else { return }
+  print("[Dry run]")
+  flushStdout()
 }
 
 // MARK: - Confirmation Prompts
