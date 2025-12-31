@@ -240,6 +240,19 @@ func writeFlattenMap(
   )
 }
 
+// MARK: - Spinner
+
+struct Spinner {
+  private let frames = ["|", "/", "-", "\\"]
+  private var index = 0
+
+  mutating func next() -> String {
+    let frame = frames[index]
+    index = (index + 1) % frames.count
+    return frame
+  }
+}
+
 // MARK: - Flatten Execution
 
 func performFlatten(
@@ -268,9 +281,8 @@ func performFlatten(
   let totalFiles = map.targets.reduce(0) { $0 + $1.files.count }
   var processed = 0
   var copiedCount = 0
-
-  // ✅ FIX: persist overwrite-all decision
   var overwriteAll = overwrite
+  var spinner = Spinner()
 
   if !quiet && !silent {
     print("▶ Copying \(totalFiles) files")
@@ -312,15 +324,21 @@ func performFlatten(
         continue
       }
 
-      print("✔ Copied \(processed)/\(totalFiles)")
+      let line =
+        "\(spinner.next()) Copied \(processed) / \(totalFiles)"
+
+      print("\r\(line)", terminator: "")
+      FileHandle.standardOutput.synchronizeFile()
 
       if verbose {
+        print()
         print("  \(sourceURL.path) → \(file.flattenedPath)")
       }
     }
   }
 
   if !silent {
+    print()
     print("✔ Finished — copied \(copiedCount) files")
   }
 }
